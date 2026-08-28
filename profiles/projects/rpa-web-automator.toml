@@ -1,0 +1,20 @@
+# Fail-closed: any match marks every component affected.
+global_paths = [
+    "requirements.txt",
+    "pytest.ini",
+    "profiles/**",
+    ".github/workflows/nexus-quality-gate.yml",
+    "scripts/nexus_quality_gate.py",
+  ]
+
+[project]
+id = "rpa-web-automator"
+repository = "Rubens-Marques/rpa-web-automator"
+
+[components.app]
+paths = [
+    "src/**",
+    "tests/**",
+  ]
+checks = ["gate-contract", "trivy"]
+images = []
