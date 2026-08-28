@@ -34,12 +34,12 @@ class NexusQualityGateContract(unittest.TestCase):
         self.assertNotIn("testcontainers", workflow.lower())
         self.assertNotIn("secrets.", workflow)
         self.assertIn(
-            "/home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed",
+            "/home/nexus-ci/.nexus-harness/install/4.0.0-rc2",
             workflow,
         )
         self.assertIn('root="${install}/src"', workflow)
         self.assertIn("nexus_harness/identity.py", workflow)
-        self.assertIn("09a19edce78fa0ab726007f5b45380e83aabaa8f", workflow)
+        self.assertIn("aefe80043b461d82ad962f40e2fe5e16a932bea5", workflow)
         self.assertIn(
             "1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54",
             workflow,
