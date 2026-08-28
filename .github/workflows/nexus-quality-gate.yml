@@ -53,12 +53,12 @@ jobs:
         id: harness
         run: |
           set -euo pipefail
-          install="/home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed"
+          install="/home/nexus-ci/.nexus-harness/install/4.0.0-rc2"
           root="${install}/src"
-          expected_commit="09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_commit="aefe80043b461d82ad962f40e2fe5e16a932bea5"
           expected_lock_sha="1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
           if [ -L "${install}" ] || [ -L "${root}/nexus_harness/identity.py" ] || [ ! -f "${root}/nexus_harness/identity.py" ]; then
-            echo "Canonical Core 4.0.0-rc2-pr-identity-09a19ed not found (fail closed; refusing install glob)" >&2
+            echo "Canonical Core 4.0.0-rc2 not found (fail closed; refusing install glob)" >&2
             exit 2
           fi
           test "$(tr -d '\n' < "${install}/SOURCE_COMMIT")" = "${expected_commit}"
@@ -81,7 +81,7 @@ jobs:
           def digest(path: Path) -> str:
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          expected_commit = "09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_commit = "aefe80043b461d82ad962f40e2fe5e16a932bea5"
           expected_lock_sha = "1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
           source_commit = (install / "SOURCE_COMMIT").read_text(encoding="utf-8").strip()
           lock_path = install / "harness.lock"
@@ -137,7 +137,7 @@ jobs:
 
       - name: Verify canonical identity
         env:
-          PINNED_CORE_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          PINNED_CORE_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2/src
         run: |
           set -euo pipefail
           python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" - << 'PY'
@@ -169,7 +169,7 @@ jobs:
 
       - name: Re-attest Canonical Core after dependencies
         env:
-          PINNED_CORE_INSTALL: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed
+          PINNED_CORE_INSTALL: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2
         run: |
           set -euo pipefail
           python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" - << 'PY'
@@ -183,7 +183,7 @@ jobs:
           def digest(path: Path) -> str:
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          expected_commit = "09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_commit = "aefe80043b461d82ad962f40e2fe5e16a932bea5"
           expected_lock_sha = "1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
           source_commit = (install / "SOURCE_COMMIT").read_text(encoding="utf-8").strip()
           lock_path = install / "harness.lock"
@@ -263,8 +263,8 @@ jobs:
 
       - name: Resolve affected plan
         env:
-          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
-          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2/src
+          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2/src
           TRIVY: ${{ runner.temp }}/bin/trivy
         run: |
           set -euo pipefail
@@ -273,8 +273,8 @@ jobs:
 
       - name: Run batched quality + security
         env:
-          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
-          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2/src
+          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2/src
           TRIVY: ${{ runner.temp }}/bin/trivy
         run: |
           set -euo pipefail
