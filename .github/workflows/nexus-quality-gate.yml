@@ -1,0 +1,309 @@
+# Nexus Quality Gate — self-hosted [self-hosted, nexus-ci]
+# Adapted from harness ci/workflow.template.yml.
+# Does not replace legacy CI/deploy workflows.
+# Runner labels [self-hosted, nexus-ci] — jobs queue until the host is shared (onda 2).
+# Does not run on GitHub-hosted runners (minutes for this workflow = 0).
+name: Nexus Quality Gate
+
+permissions:
+  contents: read
+  pull-requests: read
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+jobs:
+  runner-smoke:
+    name: Runner smoke
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nexus-ci]
+    steps:
+      - name: Identity
+        run: |
+          set -euo pipefail
+          test "$(id -un)" = "nexus-ci"
+          test ! -S /var/run/docker.sock -o ! -w /var/run/docker.sock
+          echo "runner_user=$(id -un) uid=$(id -u)"
+          echo "groups=$(id -nG)"
+          id -nG | grep -qw docker && { echo "FAIL: docker group"; exit 1; } || echo "PASS: not in docker group"
+
+  quality-gate:
+    name: Quality Gate
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: runner-smoke
+    runs-on: [self-hosted, nexus-ci]
+    concurrency:
+      group: ${{ github.workflow }}-pr-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      NEXUS_CI_PROFILE: profiles/projects/rpa-web-automator.toml
+      PYTHONPYCACHEPREFIX: /tmp/nexus-python-cache-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+
+      - name: Locate Canonical Core
+        id: harness
+        run: |
+          set -euo pipefail
+          install="/home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed"
+          root="${install}/src"
+          expected_commit="09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_lock_sha="1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
+          if [ -L "${install}" ] || [ -L "${root}/nexus_harness/identity.py" ] || [ ! -f "${root}/nexus_harness/identity.py" ]; then
+            echo "Canonical Core 4.0.0-rc2-pr-identity-09a19ed not found (fail closed; refusing install glob)" >&2
+            exit 2
+          fi
+          test "$(tr -d '\n' < "${install}/SOURCE_COMMIT")" = "${expected_commit}"
+          echo "${expected_lock_sha}  ${install}/harness.lock" | sha256sum -c -
+          if find "${install}" -xdev -perm /022 \
+            ! -path "*/__pycache__" \
+            ! -path "*/__pycache__/*" \
+            -print -quit | grep -q .; then
+            echo "Canonical Core is group/world writable" >&2
+            exit 2
+          fi
+          PINNED_CORE_INSTALL="${install}" python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" - << 'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          install = Path(os.environ["PINNED_CORE_INSTALL"])
+
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          expected_commit = "09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_lock_sha = "1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
+          source_commit = (install / "SOURCE_COMMIT").read_text(encoding="utf-8").strip()
+          lock_path = install / "harness.lock"
+          if source_commit != expected_commit or digest(lock_path) != expected_lock_sha:
+              raise SystemExit("Canonical Core provenance drift after dependencies")
+          lock = json.loads(lock_path.read_text(encoding="utf-8"))
+
+          def included(path: Path) -> bool:
+              return (
+                  "__pycache__" not in path.parts
+                  and path.suffix not in {".pyc", ".pyo"}
+                  and path.name not in {".DS_Store", ".gitkeep"}
+              )
+
+          engine = lock["engine_hashes"]
+          package = install / "src" / "nexus_harness"
+          actual_engine = set()
+          for path in package.rglob("*"):
+              if path.is_file() and included(path):
+                  relative = path.relative_to(package).as_posix()
+                  actual_engine.add(f"dist/src/nexus_harness/{relative}")
+          if actual_engine != set(engine):
+              raise SystemExit("Canonical Core engine file set drift")
+          for key, expected in engine.items():
+              relative = key.removeprefix("dist/src/nexus_harness/")
+              path = package / relative
+              if path.is_symlink() or digest(path) != expected:
+                  raise SystemExit(f"Canonical Core engine hash drift: {key}")
+
+          canonical = {
+              key: value
+              for key, value in lock["canonical_hashes"].items()
+              if key.startswith("core/")
+          }
+          actual_canonical = {
+              path.relative_to(install).as_posix()
+              for path in (install / "core").rglob("*")
+              if path.is_file() and included(path)
+          }
+          if actual_canonical != set(canonical):
+              raise SystemExit("Canonical Core canonical file set drift")
+          for key, expected in canonical.items():
+              path = install / key
+              if path.is_symlink() or digest(path) != expected:
+                  raise SystemExit(f"Canonical Core canonical hash drift: {key}")
+          print(f"CORE_ENGINE_HASHES=PASS count={len(engine)}")
+          print(f"CORE_CANONICAL_HASHES=PASS count={len(canonical)}")
+          PY
+          echo "root=${root}"
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+          echo "NEXUS_HARNESS_ROOT=${root}" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=${root}" >> "$GITHUB_ENV"
+
+      - name: Verify canonical identity
+        env:
+          PINNED_CORE_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+        run: |
+          set -euo pipefail
+          python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" - << 'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          root = Path(os.environ["PINNED_CORE_ROOT"]).resolve()
+          sys.path.insert(0, str(root))
+          from nexus_harness import identity as identity_module
+
+          expected_module = root / "nexus_harness" / "identity.py"
+          if Path(identity_module.__file__).resolve() != expected_module:
+              raise SystemExit("canonical identity import escaped attested root")
+
+          identity = identity_module.resolve_repo_identity(
+              env=os.environ, cwd=Path.cwd()
+          )
+          print(f"checkout_sha={identity.checkout_sha}")
+          print(f"change_head_sha={identity.change_head_sha}")
+          print("freshness_target=change_head_sha")
+          expected = os.environ["HEAD_SHA"].strip().lower()
+          if identity.change_head_sha != expected:
+              raise SystemExit(
+                  f"change_head_sha mismatch: {identity.change_head_sha} != {expected}"
+              )
+          print("identity_freshness=PASS")
+          PY
+
+      - name: Re-attest Canonical Core after dependencies
+        env:
+          PINNED_CORE_INSTALL: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed
+        run: |
+          set -euo pipefail
+          python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" - << 'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          install = Path(os.environ["PINNED_CORE_INSTALL"])
+
+          def digest(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          expected_commit = "09a19edce78fa0ab726007f5b45380e83aabaa8f"
+          expected_lock_sha = "1d2ad1798549d8605a3db2351c6b3f30421181ec77132e6cbf27abf8923d0b54"
+          source_commit = (install / "SOURCE_COMMIT").read_text(encoding="utf-8").strip()
+          lock_path = install / "harness.lock"
+          if source_commit != expected_commit or digest(lock_path) != expected_lock_sha:
+              raise SystemExit("Canonical Core provenance drift after dependencies")
+          lock = json.loads(lock_path.read_text(encoding="utf-8"))
+
+          def included(path: Path) -> bool:
+              return (
+                  "__pycache__" not in path.parts
+                  and path.suffix not in {".pyc", ".pyo"}
+                  and path.name not in {".DS_Store", ".gitkeep"}
+              )
+
+          engine = lock["engine_hashes"]
+          package = install / "src" / "nexus_harness"
+          actual_engine = {
+              f"dist/src/nexus_harness/{path.relative_to(package).as_posix()}"
+              for path in package.rglob("*")
+              if path.is_file() and included(path)
+          }
+          if actual_engine != set(engine):
+              raise SystemExit("Canonical Core engine file set drift")
+          for key, expected in engine.items():
+              path = package / key.removeprefix("dist/src/nexus_harness/")
+              if path.is_symlink() or digest(path) != expected:
+                  raise SystemExit(f"Canonical Core engine hash drift: {key}")
+
+          canonical = {
+              key: value
+              for key, value in lock["canonical_hashes"].items()
+              if key.startswith("core/")
+          }
+          actual_canonical = {
+              path.relative_to(install).as_posix()
+              for path in (install / "core").rglob("*")
+              if path.is_file() and included(path)
+          }
+          if actual_canonical != set(canonical):
+              raise SystemExit("Canonical Core canonical file set drift")
+          for key, expected in canonical.items():
+              path = install / key
+              if path.is_symlink() or digest(path) != expected:
+                  raise SystemExit(f"Canonical Core canonical hash drift: {key}")
+          print(f"CORE_ENGINE_HASHES=PASS count={len(engine)}")
+          print(f"CORE_CANONICAL_HASHES=PASS count={len(canonical)}")
+          PY
+
+      - name: Ensure pinned Trivy
+        run: |
+          set -euo pipefail
+          ver="0.74.0"
+          case "$(uname -m)" in
+            x86_64)
+              asset="trivy_${ver}_Linux-64bit.tar.gz"
+              sha="2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a"
+              ;;
+            aarch64)
+              asset="trivy_${ver}_Linux-ARM64.tar.gz"
+              sha="b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5"
+              ;;
+            *)
+              echo "unsupported arch $(uname -m)" >&2
+              exit 1
+              ;;
+          esac
+          dest="${RUNNER_TEMP}/trivy-install"
+          mkdir -p "${dest}" "${RUNNER_TEMP}/bin"
+          curl -fsSL -o "${dest}/${asset}" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${ver}/${asset}"
+          echo "${sha}  ${dest}/${asset}" | sha256sum -c -
+          tar -xzf "${dest}/${asset}" -C "${dest}" trivy
+          install -m 0755 "${dest}/trivy" "${RUNNER_TEMP}/bin/trivy"
+          echo "${RUNNER_TEMP}/bin" >> "$GITHUB_PATH"
+          echo "TRIVY=${RUNNER_TEMP}/bin/trivy" >> "$GITHUB_ENV"
+          echo "installed pinned trivy v${ver} -> ${RUNNER_TEMP}/bin/trivy"
+
+      - name: Resolve affected plan
+        env:
+          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          TRIVY: ${{ runner.temp }}/bin/trivy
+        run: |
+          set -euo pipefail
+          python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" scripts/nexus_quality_gate.py --affected-only --base "${BASE_SHA}" --head "${HEAD_SHA}"
+          test -f affected.json
+
+      - name: Run batched quality + security
+        env:
+          NEXUS_HARNESS_ROOT: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          PYTHONPATH: /home/nexus-ci/.nexus-harness/install/4.0.0-rc2-pr-identity-09a19ed/src
+          TRIVY: ${{ runner.temp }}/bin/trivy
+        run: |
+          set -euo pipefail
+          python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" scripts/nexus_quality_gate.py --from-affected affected.json
+          python3 -I -X "pycache_prefix=${PYTHONPYCACHEPREFIX}" scripts/nexus_quality_gate.py --security-only
+
+      - name: Workspace cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 - << 'PY'
+          import os
+          import shutil
+          from pathlib import Path
+          ws = Path(os.environ.get("GITHUB_WORKSPACE") or ".")
+          for name in (
+              "affected.json",
+              "trivy.json",
+              "quality-report.json",
+              "security-report.json",
+          ):
+              path = ws / name
+              if path.is_file():
+                  path.unlink()
+          python_cache = Path(os.environ["PYTHONPYCACHEPREFIX"]).resolve()
+          if (
+              python_cache.parent == Path("/tmp")
+              and python_cache.name.startswith("nexus-python-cache-")
+          ):
+              shutil.rmtree(python_cache, ignore_errors=True)
+          print("workspace_cleanup=done")
+          PY

@@ -1,0 +1,10 @@
+---
+description: Nexus Harness v4 Canonical Core vs project-local rules
+alwaysApply: true
+---
+
+Canonical Core (installed Nexus Harness v4) owns workflow, quality, security, memory, and runtime policy.
+
+This repository keeps only project-specific architecture, commands, deploy profile, and domain constraints (`PROJECT.md`, `AGENTS.md`, `.claude/deploy-profile.md`).
+
+Do not add a second runtime-specific workflow. Cursor project skills here coexist with the global harness; they do not override it.
