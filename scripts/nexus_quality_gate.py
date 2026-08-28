@@ -289,28 +289,32 @@ def cmd_security() -> int:
     identity = _repo_identity()
     trivy = _trivy_bin()
     out = ROOT / "trivy.json"
+    cmd = [
+        trivy,
+        "fs",
+        "--scanners",
+        "vuln,secret,misconfig",
+        "--format",
+        "json",
+        "--skip-dirs",
+        "node_modules",
+        "--skip-dirs",
+        "vendor",
+        "--skip-dirs",
+        "venv",
+        "--skip-dirs",
+        ".bundle",
+        "--skip-dirs",
+        ".worktrees",
+        "--output",
+        str(out),
+    ]
+    ignorefile = ROOT / ".github" / "trivyignore"
+    if ignorefile.is_file():
+        cmd.extend(["--ignorefile", str(ignorefile)])
+    cmd.append(".")
     code = subprocess.run(
-        [
-            trivy,
-            "fs",
-            "--scanners",
-            "vuln,secret,misconfig",
-            "--format",
-            "json",
-            "--skip-dirs",
-            "node_modules",
-            "--skip-dirs",
-            "vendor",
-            "--skip-dirs",
-            "venv",
-            "--skip-dirs",
-            ".bundle",
-            "--skip-dirs",
-            ".worktrees",
-            "--output",
-            str(out),
-            ".",
-        ],
+        cmd,
         cwd=ROOT,
         check=False,
     )
