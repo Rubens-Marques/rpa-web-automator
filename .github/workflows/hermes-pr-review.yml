@@ -1,0 +1,99 @@
+name: Hermes PR Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: hermes-pr-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  hermes-pr-review:
+    name: hermes-pr-review
+    runs-on: ubuntu-latest
+
+    if: ${{ !github.event.pull_request.draft }}
+
+    steps:
+      - name: Send PR to Hermes Review API
+        id: hermes
+        shell: bash
+        env:
+          HERMES_REVIEW_API_URL: ${{ secrets.HERMES_REVIEW_API_URL }}
+          HERMES_REVIEW_API_SECRET: ${{ secrets.HERMES_REVIEW_API_SECRET }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.actor }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' > hermes-response.json
+          import hashlib
+          import hmac
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          url = os.environ["HERMES_REVIEW_API_URL"].rstrip("/") + "/api/v1/review/pr"
+          secret = os.environ["HERMES_REVIEW_API_SECRET"].encode()
+
+          payload = {
+              "repo": os.environ["REPO"],
+              "pr_number": int(os.environ["PR_NUMBER"]),
+              "head_sha": os.environ["HEAD_SHA"],
+              "action": os.environ["ACTION"],
+              "sender": os.environ["SENDER"],
+              "html_url": os.environ["PR_URL"],
+          }
+
+          body = json.dumps(payload, separators=(",", ":")).encode()
+          sig = hmac.new(secret, body, hashlib.sha256).hexdigest()
+
+          req = urllib.request.Request(
+              url,
+              data=body,
+              headers={
+                  "Content-Type": "application/json",
+                  "X-Hermes-Signature": f"sha256={sig}",
+              },
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(req, timeout=900) as res:
+                  sys.stdout.write(res.read().decode())
+          except Exception as exc:
+              print(json.dumps({
+                  "status": "BLOCKER",
+                  "severity": "CRITICAL",
+                  "should_block_merge": True,
+                  "summary": f"Hermes Review API failed: {exc}",
+              }))
+              sys.exit(0)
+          PY
+
+          cat hermes-response.json
+
+          STATUS="$(python3 -c 'import json; print(json.load(open("hermes-response.json")).get("status","BLOCKER"))')"
+          SHOULD_BLOCK="$(python3 -c 'import json; print(str(json.load(open("hermes-response.json")).get("should_block_merge", True)).lower())')"
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "should_block=$SHOULD_BLOCK" >> "$GITHUB_OUTPUT"
+
+          if [ "$SHOULD_BLOCK" = "true" ]; then
+            echo "Hermes blocked this PR: $STATUS"
+            exit 1
+          fi
